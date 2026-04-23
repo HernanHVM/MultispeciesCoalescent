@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coalescencia Multiespecies – Yang & Rannala / Degnan & Rosenberg</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #fff;
+      color: #222;
+      margin: 0;
+      padding: 1.5rem;
+    }
+    h2 { font-size: 18px; font-weight: 500; margin: 0 0 2px; }
+    p.sub { font-size: 13px; color: #666; margin: 0 0 14px; }
+    canvas { display: block; width: 100%; border-radius: 8px; }
+    .ctrl { display: flex; align-items: center; gap: 10px; margin: 7px 0; font-size: 13px; color: #555; }
+    .ctrl label { min-width: 200px; }
+    .ctrl span { min-width: 38px; text-align: right; font-size: 12px; color: #777; }
+    .btns { display: flex; gap: 8px; margin: 10px 0 4px; flex-wrap: wrap; }
+    button {
+      font-size: 12px; padding: 4px 12px; border-radius: 6px;
+      border: 0.5px solid #bbb; background: transparent; color: #222; cursor: pointer;
+    }
+    button:hover { background: #f5f5f5; }
+    button.active { background: #f0f0f0; border-color: #888; }
+    #infopanel {
+      font-size: 12px; color: #555; margin-top: 8px; min-height: 40px;
+      line-height: 1.6; padding: 8px 10px; border-radius: 6px; background: #f7f7f5;
+    }
+    .legend-row {
+      display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0;
+      font-size: 12px; color: #666; align-items: center;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #e0e0e0; }
+      p.sub { color: #aaa; }
+      .ctrl { color: #aaa; }
+      .ctrl span { color: #888; }
+      button { border-color: #555; color: #e0e0e0; }
+      button:hover { background: #2a2a2a; }
+      button.active { background: #2e2e2e; border-color: #888; }
+      #infopanel { background: #242424; color: #aaa; }
+      .legend-row { color: #aaa; }
+    }
+  </style>
+</head>
+<body>
+  <h2>Coalescencia Multiespecie</h2>
+  <p class="sub">Linajes de genes coalesciendo dentro del árbol de especies. Basado en Yang &amp; Rannala (2003/2005) y Degnan &amp; Rosenberg (2006/2009).</p>
+
+  <canvas id="cv" height="380"></canvas>
+
+  <div class="ctrl">
+    <label>Tiempo entre eventos de especiación (τ)</label>
+    <input type="range" id="tau" min="0.05" max="100" step="0.05" value="0.5" style="flex:1">
+    <span id="tauv">0.50</span>
+  </div>
+  <div class="ctrl">
+    <label>Tamaño poblacional ancestral (θ)</label>
+    <input type="range" id="theta" min="0.1" max="100" step="0.1" value="1.0" style="flex:1">
+    <span id="thetav">1.00</span>
+  </div>
+  <div class="ctrl">
+    <label>Número de genes simulados</label>
+    <input type="range" id="ngenes" min="1" max="100" step="1" value="5" style="flex:1">
+    <span id="ngenesv">5</span>
+  </div>
+
+  <div class="btns">
+    <button onclick="simular()">Nuevo muestreo ↺</button>
+    <button id="btnConc" onclick="setModo('concordante')" class="active">Mostrar concordantes</button>
+    <button id="btnDisc" onclick="setModo('discordante')">Mostrar discordantes</button>
+    <button id="btnTodos" onclick="setModo('todos')">Todos los genes</button>
+  </div>
+
+  <div class="legend-row">
+    <span><span class="dot" style="background:#534AB7"></span>Árbol de especies</span>
+    <span><span class="dot" style="background:#1D9E75"></span>Gen concordante</span>
+    <span><span class="dot" style="background:#D85A30"></span>Gen discordante (ILS)</span>
+  </div>
+
+  <div id="infopanel">Ajusta τ y θ para ver cómo cambia la discordancia. Valores bajos de τ/θ acercan el sistema a la zona anómala de Degnan &amp; Rosenberg (2009).</div>
+
+  <script>
+    const cv = document.getElementById('cv');
+    const cx = cv.getContext('2d');
+    const W = 680, H = 380;
+    cv.width = W; cv.height = H;
+
+    let modo = 'concordante';
+    let resultados = [];
+
+    function setModo(m) {
+      modo = m;
+      ['btnConc','btnDisc','btnTodos'].forEach(id => document.getElementById(id).classList.remove('active'));
+      const map = {concordante:'btnConc', discordante:'btnDisc', todos:'btnTodos'};
+      document.getElementById(map[m]).classList.add('active');
+      dibujar();
+    }
+
+    function getTau()    { return +document.getElementById('tau').value; }
+    function getTheta()  { return +document.getElementById('theta').value; }
+    function getNGenes() { return +document.getElementById('ngenes').value; }
+
+    document.getElementById('tau').oninput = () => {
+      document.getElementById('tauv').textContent = getTau().toFixed(2);
+      simular();
+    };
+    document.getElementById('theta').oninput = () => {
+      document.getElementById('thetav').textContent = getTheta().toFixed(2);
+      simular();
+    };
+    document.getElementById('ngenes').oninput = () => {
+      document.getElementById('ngenesv').textContent = getNGenes();
+      simular();
+    };
+
+    function coalExp(rate) { return -Math.log(Math.random()) / rate; }
+
+    function simularGen(tau, theta) {
+      const Ne = theta / 2;
+      const t1 = tau;
+      const t2 = tau * 2;
+
+      let lineA = {id:'A', t:0};
+      let lineB = {id:'B', t:0};
+      let lineC = {id:'C', t:0};
+      let events = [];
+      let t = 0;
+      let pool = [lineA, lineB];
+      let coalesced = false;
+
+      while (t < t1 && pool.length > 1) {
+        const k = pool.length;
+        const rate = k*(k-1)/(2*Ne);
+        const dt = coalExp(rate);
+        t += dt;
+        if (t < t1 && pool.length === 2) {
+          events.push({t, type:'coal', species:'AB_early', ids:[pool[0].id, pool[1].id]});
+          pool = [{id:'AB', t}];
+          coalesced = true;
+        }
+      }
+
+      pool.push(lineC);
+      if (coalesced) {
+        t = t1;
+        let pool2 = [...pool];
+        while (t < t2 && pool2.length > 1) {
+          const k = pool2.length;
+          const rate = k*(k-1)/(2*Ne);
+          const dt = coalExp(rate);
+          t += dt;
+          if (t < t2) {
+            events.push({t, type:'coal', species:'ABC_mid'});
+            pool2 = [{id:'ABC', t}];
+          }
+        }
+        events.push({t: t2, type:'root'});
+        return {concordante: true, events, topology:'(A,B),C'};
+      } else {
+        pool = [lineA, lineB, lineC];
+        t = t1;
+        while (pool.length > 1) {
+          const k = pool.length;
+          const rate = k*(k-1)/(2*Ne);
+          const dt = coalExp(rate);
+          t += dt;
+          if (pool.length === 3) {
+            const i = Math.floor(Math.random()*3);
+            let j; do { j = Math.floor(Math.random()*3); } while(j===i);
+            const merged = pool[i].id + pool[j].id;
+            events.push({t, type:'coal', ids:[pool[i].id, pool[j].id], species:'anc'});
+            pool = pool.filter((_,idx)=>idx!==i&&idx!==j);
+            pool.push({id:merged, t});
+          } else {
+            events.push({t, type:'coal', ids:[pool[0].id, pool[1].id], species:'root'});
+            pool = [{id:'root', t}];
+          }
+        }
+        const firstCoal = events.find(e=>e.type==='coal'&&e.species==='anc');
+        let topo = '(A,B),C';
+        if (firstCoal) {
+          const ids = (firstCoal.ids||[]).join('');
+          if (ids.includes('A') && ids.includes('C') && !ids.includes('B')) topo = '(A,C),B';
+          else if (ids.includes('B') && ids.includes('C') && !ids.includes('A')) topo = '(B,C),A';
+        }
+        return {concordante: topo === '(A,B),C', events, topology:topo};
+      }
+    }
+
+    function simular() {
+      const tau = getTau();
+      const theta = getTheta();
+      const n = getNGenes();
+      resultados = Array.from({length:n}, () => simularGen(tau, theta));
+      dibujar();
+      actualizarInfo();
+    }
+
+    function actualizarInfo() {
+      const tau = getTau();
+      const theta = getTheta();
+      const n = resultados.length;
+      const nDisc = resultados.filter(r=>!r.concordante).length;
+      const pDisc = Math.round(nDisc/n*100);
+      const uCoal = (tau/theta).toFixed(2);
+      let zona = +uCoal < 0.3
+        ? '⚠️ Cerca de la zona anómala (Degnan & Rosenberg 2009): el árbol de gen más frecuente puede NO ser el árbol de especie.'
+        : +uCoal < 0.8
+          ? 'ILS moderado: la discordancia entre genes y árbol de especie es frecuente.'
+          : 'ILS bajo: los genes tienden a concordar con el árbol de especies.';
+      document.getElementById('infopanel').textContent =
+        `Genes discordantes: ${nDisc}/${n} (${pDisc}%). Unidades coalescentes τ/θ = ${uCoal}. ${zona}`;
+    }
+
+    function dibujar() {
+      const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      cx.clearRect(0, 0, W, H);
+
+      const tau = getTau();
+      const maxT = tau * 2 + 1.5;
+
+      const padL = 50, padR = 30, padT = 50, padB = 40;
+      const gw = W - padL - padR;
+      const gh = H - padT - padB;
+
+      // Flipped: t=0 (present) at TOP, t=maxT (past/root) at BOTTOM
+      function yOf(t) { return padT + gh * (Math.min(t, maxT) / maxT); }
+
+      const xA    = padL + gw * 0.18;
+      const xB    = padL + gw * 0.50;
+      const xC    = padL + gw * 0.82;
+      const xAB   = padL + gw * 0.34;
+      const xRoot = padL + gw * 0.50;
+
+      const yNow  = yOf(0);           // top
+      const yT1   = yOf(tau);
+      const yT2   = yOf(tau * 2);
+      const yRoot = yOf(maxT - 0.2);  // bottom
+
+      const spCol      = dark ? '#7F77DD' : '#534AB7';
+      const spColLight = dark ? 'rgba(127,119,221,0.15)' : 'rgba(83,74,183,0.10)';
+
+      // Species tree shaded fill (now opening upward)
+      cx.fillStyle = spColLight;
+      cx.beginPath();
+      cx.moveTo(xA - 14, yNow);
+      cx.lineTo(xA - 14, yT1);
+      cx.lineTo(xAB - 18, yT2);
+      cx.lineTo(xRoot - 30, yRoot);
+      cx.lineTo(xRoot + 30, yRoot);
+      cx.lineTo(xRoot, yT2);
+      cx.lineTo(xC + 14, yT1);
+      cx.lineTo(xC + 14, yNow);
+      cx.lineTo(xB + 14, yNow);
+      cx.lineTo(xB + 14, yT1);
+      cx.lineTo(xAB + 18, yT2);
+      cx.lineTo(xAB - 18, yT2);
+      cx.lineTo(xB - 14, yT1);
+      cx.lineTo(xB - 14, yNow);
+      cx.lineTo(xA + 14, yNow);
+      cx.lineTo(xA + 14, yT1);
+      cx.lineTo(xAB - 18, yT2);
+      cx.closePath();
+      cx.fill();
+
+      cx.strokeStyle = spCol;
+      cx.lineWidth = 2;
+      cx.setLineDash([]);
+
+      const spLines = [
+        [xA, yNow, xA, yT1], [xB, yNow, xB, yT1],
+        [xA, yT1, xAB, yT2], [xB, yT1, xAB, yT2],
+        [xAB, yT2, xRoot, yRoot],
+        [xC, yNow, xC, yT1], [xC, yT1, xRoot, yT2],
+        [xRoot, yT2, xRoot, yRoot],
+      ];
+      spLines.forEach(([x1,y1,x2,y2]) => {
+        cx.beginPath(); cx.moveTo(x1,y1); cx.lineTo(x2,y2); cx.stroke();
+      });
+
+      // Species labels at TOP
+      const labelCol = dark ? 'rgba(200,200,200,0.85)' : 'rgba(50,50,50,0.9)';
+      cx.fillStyle = labelCol;
+      cx.font = '500 13px sans-serif';
+      cx.textAlign = 'center';
+      ['Sp. A','Sp. B','Sp. C'].forEach((lbl,i) => {
+        cx.fillText(lbl, [xA, xB, xC][i], yNow - 8);
+      });
+
+      // "Pasado" label at bottom, "Presente" at top
+      cx.font = '11px sans-serif';
+      cx.fillStyle = dark ? 'rgba(200,200,200,0.45)' : 'rgba(100,100,100,0.55)';
+      cx.textAlign = 'left';
+      cx.fillText('← presente', padL, yNow + 14);
+      cx.fillText('← pasado (raíz)', padL, yRoot + 14);
+
+      // Speciation event dashed lines + labels (left margin to avoid right clip)
+      const axisLabelCol = dark ? 'rgba(127,119,221,0.65)' : 'rgba(83,74,183,0.65)';
+      cx.font = '11px sans-serif';
+      cx.fillStyle = axisLabelCol;
+      cx.textAlign = 'left';
+      cx.fillText('τ₁ (1er evento espec.)', padL, yT1 - 5);
+      cx.fillText('τ₂ (2do evento espec.)', padL, yT2 - 5);
+
+      cx.setLineDash([3,3]);
+      cx.strokeStyle = dark ? 'rgba(127,119,221,0.25)' : 'rgba(83,74,183,0.18)';
+      cx.lineWidth = 0.5;
+      cx.beginPath(); cx.moveTo(padL, yT1); cx.lineTo(W - padR, yT1); cx.stroke();
+      cx.beginPath(); cx.moveTo(padL, yT2); cx.lineTo(W - padR, yT2); cx.stroke();
+      cx.setLineDash([]);
+
+      const genConcCol = dark ? '#5DCAA5' : '#1D9E75';
+      const genDiscCol = dark ? '#F0997B' : '#D85A30';
+
+      const filtrados = resultados.filter(r => {
+        if (modo === 'concordante') return r.concordante;
+        if (modo === 'discordante') return !r.concordante;
+        return true;
+      });
+
+      filtrados.forEach((gen, gi) => {
+        const col = gen.concordante ? genConcCol : genDiscCol;
+        const alpha = Math.max(0.15, 0.9 - filtrados.length * 0.008);
+        const hexA = Math.round(alpha * 255).toString(16).padStart(2,'0');
+        cx.strokeStyle = col + hexA;
+        cx.lineWidth = filtrados.length > 30 ? 0.8 : 1.2;
+        cx.setLineDash([]);
+        const spread = Math.min(12, 3 + filtrados.length * 0.08);
+        const jitter = (gi - filtrados.length / 2) * spread / filtrados.length;
+
+        if (gen.concordante) {
+          const tCoal1 = gen.events.find(e => e.species === 'AB_early');
+          const tC1 = tCoal1 ? Math.min(tCoal1.t, tau) : tau * 0.6;
+          // A and B coalesce going downward
+          cx.beginPath();
+          cx.moveTo(xA + jitter, yNow);
+          cx.lineTo(xA + jitter, yOf(tC1));
+          cx.lineTo(xAB + jitter, yOf(tC1));
+          cx.lineTo(xAB + jitter, yOf(tau * 2 - 0.05));
+          cx.stroke();
+          cx.beginPath();
+          cx.moveTo(xB + jitter, yNow);
+          cx.lineTo(xB + jitter, yOf(tC1 * 0.8));
+          cx.lineTo(xAB + jitter, yOf(tC1));
+          cx.stroke();
+          cx.beginPath();
+          cx.moveTo(xC + jitter, yNow);
+          cx.lineTo(xC + jitter, yOf(tau * 2 - 0.05));
+          cx.lineTo(xRoot + jitter, yOf(tau * 2 - 0.05));
+          cx.stroke();
+        } else {
+          const topo = gen.topology;
+          const firstCoalT = gen.events.length > 0 ? gen.events[0].t : tau * 1.3;
+          const secondCoalT = gen.events.length > 1 ? gen.events[1].t : firstCoalT + 0.5;
+          if (topo === '(A,C),B') {
+            cx.beginPath(); cx.moveTo(xA+jitter, yNow); cx.lineTo(xA+jitter, yOf(firstCoalT)); cx.lineTo(xC+jitter*0.5, yOf(firstCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xC+jitter, yNow); cx.lineTo(xC+jitter, yOf(firstCoalT*0.85)); cx.lineTo(xC+jitter*0.5, yOf(firstCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xB+jitter, yNow); cx.lineTo(xB+jitter, yOf(secondCoalT)); cx.lineTo(xRoot+jitter, yOf(secondCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xC+jitter*0.5, yOf(firstCoalT)); cx.lineTo(xRoot+jitter, yOf(secondCoalT)); cx.stroke();
+          } else {
+            cx.beginPath(); cx.moveTo(xB+jitter, yNow); cx.lineTo(xB+jitter, yOf(firstCoalT)); cx.lineTo(xC+jitter*0.5, yOf(firstCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xC+jitter, yNow); cx.lineTo(xC+jitter, yOf(firstCoalT*0.85)); cx.lineTo(xC+jitter*0.5, yOf(firstCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xA+jitter, yNow); cx.lineTo(xA+jitter, yOf(secondCoalT)); cx.lineTo(xRoot+jitter, yOf(secondCoalT)); cx.stroke();
+            cx.beginPath(); cx.moveTo(xC+jitter*0.5, yOf(firstCoalT)); cx.lineTo(xRoot+jitter, yOf(secondCoalT)); cx.stroke();
+          }
+        }
+
+        const tLast = gen.events.length > 0 ? gen.events[gen.events.length-1].t : tau*2;
+        cx.beginPath();
+        cx.arc(xRoot + jitter, yOf(Math.min(tLast + 0.05, maxT - 0.1)), 3, 0, Math.PI*2);
+        cx.fillStyle = col;
+        cx.fill();
+      });
+    }
+
+    simular();
+  </script>
+</body>
+</html>
